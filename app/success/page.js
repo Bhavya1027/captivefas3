@@ -1,4 +1,6 @@
 // app/success/page.js
+"use client";
+
 export default function SuccessPage() {
     return (
         <main style={{
