@@ -3,11 +3,11 @@ import { ATITHE_CONFIG } from '@/lib/config';
 import ConnectButton from '@/components/ConnectButton';
 
 export default async function LoginPage({ searchParams }) {
-    const { enc, iv } = await searchParams;
+    const { fas, iv } = await searchParams;
 
-    if (!enc || !iv) return <div>Invalid Gateway Request</div>;
+    if (!fas || !iv) return <div>Invalid Gateway Request</div>;
 
-    const data = decryptFAS(enc, iv, ATITHE_CONFIG.faskey);
+    const data = decryptFAS(fas, iv, ATITHE_CONFIG.faskey);
 
     if (!data) return <div>Handshake Failed: Verify FASKEY</div>;
 
