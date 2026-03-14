@@ -9,7 +9,7 @@ export default function ConnectButton({ token, gateway }) {
         try {
             // Tell our Next.js backend that this token is authenticated
             // This adds the token to the memory `authList` so the router's `authmon` daemon can pick it up.
-            await fetch('/login', {
+            await fetch('/api/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'register_token', token }),
