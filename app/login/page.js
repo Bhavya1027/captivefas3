@@ -14,11 +14,24 @@ export default async function LoginPage({ searchParams }) {
 
     if (!data) return <div>Handshake Failed: Verify FASKEY</div>;
 
+    // In FAS Secure Level 2/3, the token needed for authentication is the SHA256 hash of (hid + faskey)
+    const crypto = require('crypto');
+    const rhid = crypto.createHash('sha256').update(data.hid + ATITHE_CONFIG.faskey).digest('hex');
+
+    // Make sure gateway is a full HTTP URL with trailing slash
+    let gatewayUrl = data.gatewayaddress;
+    if (!gatewayUrl.startsWith('http')) {
+        gatewayUrl = `http://${gatewayUrl}`;
+    }
+    if (!gatewayUrl.endsWith('/')) {
+        gatewayUrl += '/';
+    }
+
     return (
         <div style={{ textAlign: 'center', marginTop: '100px', fontFamily: 'sans-serif' }}>
             <h1>{ATITHE_CONFIG.hotelName}</h1>
             <p>Click below to authorize your device.</p>
-            <ConnectButton token={data.tok} gateway={data.gatewayaddress} />
+            <ConnectButton token={rhid} gateway={gatewayUrl} />
         </div>
     );
 }
