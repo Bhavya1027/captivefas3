@@ -7,7 +7,7 @@ export default async function LoginPage({ searchParams }) {
 
     if (!fas || !iv) return <div>Invalid Gateway Request</div>;
 
-    const data = decryptFAS(fas, iv, ATITHE_CONFIG.faskey);
+    const data = decryptFAS(decodeURIComponent(fas), iv, ATITHE_CONFIG.faskey);
 
     if (!data) return <div>Handshake Failed: Verify FASKEY</div>;
 
