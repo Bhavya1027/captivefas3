@@ -7,6 +7,15 @@ const redis = process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_RE
     ? Redis.fromEnv()
     : null;
 
+// Build the auth list response string in the format authmon expects:
+// "* urlencoded_entry1 urlencoded_entry2 ..."  OR just "*" for empty list.
+// The leading "*" is required by the openNDS authmon protocol — without it,
+// authmon treats the response as invalid and skips processing entirely.
+function buildAuthListResponse(authStrings) {
+    if (!authStrings || authStrings.length === 0) return '*';
+    return '* ' + authStrings.map(s => encodeURIComponent(s)).join(' ');
+}
+
 export async function POST(request) {
     try {
         const contentType = request.headers.get('content-type') || '';
@@ -19,21 +28,19 @@ export async function POST(request) {
             }
 
             const data = await request.json();
-            
+
             if (data.action === 'register_token' && data.token) {
                 const client = data.token;
-                // authmon requires precisely formatted strings: <client> 0 0 0 0 0 <base64_custom>
-                // "rhid sessionlength uploadrate downloadrate uploadquota downloadquota custom"
+                // authmon requires: "<rhid> <sessionlength> <uploadrate> <downloadrate> <uploadquota> <downloadquota> <custom_b64>"
                 const emptyCustom = Buffer.from('guest=true').toString('base64');
                 const authString = `${client} 0 0 0 0 0 ${emptyCustom}`;
-                
-                // Add to Redis Hash: mapping rhid -> authString
+
                 await redis.hset('authHash', { [client]: authString });
                 console.log(`[API] Registered token in Redis: ${authString}`);
-                
+
                 return NextResponse.json({ success: true, message: 'Token registered' });
             }
-            
+
             return NextResponse.json({ error: 'Invalid JSON request' }, { status: 400 });
         }
 
@@ -46,35 +53,45 @@ export async function POST(request) {
             const formData = await request.formData();
             const auth_get = formData.get('auth_get');
 
-            // 1. authmon asks for the list of pending authentications
+            // authmon sends "clear" on startup to wipe stale entries from the previous session.
+            if (auth_get === 'clear') {
+                console.log("[API] authmon requested 'clear' — deleting stale auth entries");
+                await redis.del('authHash');
+                return new NextResponse('', { status: 200 });
+            }
+
+            // authmon sends "list": FAS responds with all pending tokens and DELETES them immediately.
+            // (PHP reference deletes files right after including them in the list.)
             if (auth_get === 'list') {
                 console.log("[API] authmon requested 'list'");
-                
-                // Get all pending auth strings from the Hash
-                const allValues = await redis.hvals('authHash');
-                
-                if (allValues.length === 0) {
-                    return new NextResponse('', {
+
+                const allEntries = await redis.hgetall('authHash');
+
+                if (!allEntries || Object.keys(allEntries).length === 0) {
+                    return new NextResponse('*', {
                         status: 200,
                         headers: { 'Content-Type': 'text/plain; charset=utf-8' }
                     });
                 }
 
-                // PHP does: $authlist=$authlist." ".rawurlencode(trim($clientauth[0]));
-                // authmon strictly expects just the encoded strings separated by spaces.
-                const responseText = allValues.map(c => encodeURIComponent(c)).join(' ');
-                console.log(`[API] Sending list to authmon:\n${responseText}`);
+                const keys = Object.keys(allEntries);
+                const values = Object.values(allEntries);
 
-                // We DO NOT aggressively delete the tokens here.
-                // We must wait for authmon to acknowledge them in the 'view' request!
-                
-                return new NextResponse(responseText.trim(), {
+                // Delete all entries immediately, matching PHP list handler behavior.
+                await redis.hdel('authHash', ...keys);
+
+                const responseText = buildAuthListResponse(values);
+                console.log(`[API] Sending list to authmon (and deleting):\n${responseText}`);
+
+                return new NextResponse(responseText, {
                     status: 200,
                     headers: { 'Content-Type': 'text/plain; charset=utf-8' }
                 });
             }
 
-            // 2. authmon acknowledges it has read a specific token
+            // authmon sends "view": the default polling method.
+            // Cycle: authmon sends payload="none" → FAS sends list → authmon calls ndsctl auth →
+            //        authmon sends payload=<b64 ack list> → FAS deletes acked entries → FAS sends "ack"
             if (auth_get === 'view') {
                 const payloadStr = formData.get('payload');
                 let hasValidAcklist = false;
@@ -82,78 +99,68 @@ export async function POST(request) {
                 if (payloadStr) {
                     try {
                         const acklist = Buffer.from(payloadStr, 'base64').toString('utf8');
-                        console.log(`[API] authmon requested 'view' with payload: ${acklist.replace(/\n/g, '\\n')}`);
-                        
-                        // Parse acklist and remove them from our memory/DB.
-                        // acklist could be "none" or "* <rhid>\n* <rhid>"
-                        if (acklist.trim() !== "none") {
-                             hasValidAcklist = true;
-                             // They are acknowledged by the router as successfully processed!
-                             const acks = acklist.split('\n');
-                             for (const ack of acks) {
-                                  // ltrim($client, "* ") logic from PHP
-                                  let client = ack.replace(/^\*?\s*/, '').trim(); 
-                                  if (client) {
-                                      console.log(`[API] OpenNDS Successfully Authenticated: ${client}`);
-                                      // Only remove from Redis when OpenNDS confirms success!
-                                      // This allows the frontend to wait until TRUE internet access is granted.
-                                      await redis.hdel('authHash', client);
-                                  }
-                             }
+                        console.log(`[API] authmon 'view' payload decoded: ${acklist.replace(/\n/g, '\\n')}`);
+
+                        if (acklist.trim() !== 'none') {
+                            hasValidAcklist = true;
+                            // authmon is acknowledging tokens it successfully processed via ndsctl auth.
+                            // Only delete from Redis now — this confirms the firewall is open.
+                            const acks = acklist.split('\n');
+                            for (const ack of acks) {
+                                // Strip the leading "* " prefix (same as PHP's ltrim($client, "* "))
+                                const client = ack.replace(/^\*?\s*/, '').trim();
+                                if (client) {
+                                    console.log(`[API] openNDS confirmed authentication for: ${client}`);
+                                    await redis.hdel('authHash', client);
+                                }
+                            }
                         }
                     } catch (e) {
-                         console.error("[API] Failed to decode view payload", e);
+                        console.error("[API] Failed to decode view payload", e);
                     }
                 } else {
-                    console.log(`[API] authmon requested 'view' but no payload was provided`);
+                    console.log('[API] authmon view — no payload provided');
                 }
-                
-                // If authmon sent an explicit acklist with successful tokens, 
-                // it expects a simple "ack" response, NOT the next batch!
-                // It will ask for the next batch in a subsequent 'view' request with payload: 'none'.
+
+                // When authmon sent an ack list, reply with "ack". authmon will then send
+                // another view with payload=none to get the next batch.
                 if (hasValidAcklist) {
-                    return new NextResponse("ack", {
+                    return new NextResponse('ack', {
                         status: 200,
                         headers: { 'Content-Type': 'text/plain; charset=utf-8' }
                     });
                 }
 
-                // Otherwise, authmon expects the NEXT batch of pending tokens
-                // to be sent back in the EXACT same format as the 'list' command.
+                // authmon is asking for the next batch of pending tokens (payload was "none").
                 const allValues = await redis.hvals('authHash');
-                
-                if (allValues.length === 0) {
-                    // Send an 'ack' string, or if no clients, the PHP script echoes nothing if $authlist is empty, 
-                    // or just "ack" if there was an acklist. 
-                    return new NextResponse("", {
-                        status: 200,
-                        headers: { 'Content-Type': 'text/plain; charset=utf-8' }
-                    });
-                }
+                const responseText = buildAuthListResponse(allValues);
+                console.log(`[API] Sending pending list to authmon via 'view':\n${responseText}`);
 
-                // PHP just echoes the url-encoded strings separated by spaces explicitly, without an asterisk.
-                const responseText = allValues.map(c => encodeURIComponent(c)).join(' ');
-                console.log(`[API] Sending list to authmon via 'view':\n${responseText}`);
-
-                return new NextResponse(responseText.trim(), {
+                return new NextResponse(responseText, {
                     status: 200,
                     headers: { 'Content-Type': 'text/plain; charset=utf-8' }
                 });
             }
 
-            // 3. authmon sends status updates (status_log)
+            // authmon sends status updates
             if (auth_get === 'status_log') {
                 const log = formData.get('log');
-                if (log) {
-                    console.log("[API] authmon status_log:", log);
-                }
-                return new NextResponse("##########", {
+                if (log) console.log("[API] authmon status_log:", log);
+                return new NextResponse('##########', {
                     status: 200,
                     headers: { 'Content-Type': 'text/plain; charset=utf-8' }
                 });
             }
 
-            return new NextResponse('', { status: 200 }); // Ignore other form data
+            // deauthed / custom notifications
+            if (auth_get === 'deauthed' || auth_get === 'custom') {
+                return new NextResponse('ack', {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+                });
+            }
+
+            return new NextResponse('', { status: 200 });
         }
 
         return NextResponse.json({ error: 'Unsupported Content-Type' }, { status: 415 });
@@ -176,14 +183,12 @@ export async function GET(request) {
         return NextResponse.json({ error: 'Token is required' }, { status: 400 });
     }
 
-    // Check if the rhid token exists as a field in the hash
     const isMember = await redis.hexists('authHash', token);
-
-    // If it's still in the hash, it's pending. If it's gone (1 means true, 0 means false),
-    // it means it was successfully picked up and acknowledged by openNDS firewall daemon!
+    // isPending=true means token is still in Redis (waiting for authmon to process).
+    // isPending=false means authmon called ndsctl auth and the firewall is open.
     const isPending = isMember === 1;
 
-    console.log(`[API] Polling status for ${token}: isPending=${isPending}`);
+    console.log(`[API] Polling for ${token}: isPending=${isPending}`);
 
     return NextResponse.json({ isPending });
 }
