@@ -7,6 +7,23 @@ import { ATITHE_CONFIG } from '@/lib/config';
 // across invocations, but openNDS aggressively polls so it might catch it.
 global.authList = global.authList || new Map();
 
+export async function GET(request) {
+    const { searchParams } = new URL(request.url);
+    const token = searchParams.get('token');
+    
+    if (!token) {
+        return new Response('Missing token', { status: 400 });
+    }
+    
+    // Check if the token is still pending in our server memory
+    const isPending = global.authList.has(token);
+    
+    return new Response(JSON.stringify({ isPending }), { 
+        status: 200, 
+        headers: { 'Content-Type': 'application/json' }
+    });
+}
+
 export async function POST(request) {
     try {
         // Handle JSON requests from our frontend (ConnectButton)

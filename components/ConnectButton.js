@@ -10,15 +10,44 @@ export default function ConnectButton({ token, gateway }) {
         setLoading(true);
         try {
             // Tell our Next.js backend that this token is authenticated
-            // This adds the token to the memory `authList` so the router's `authmon` daemon can pick it up.
             await fetch('/api/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'register_token', token }),
             });
 
-            // Redirect the user back to the openNDS router gateway
-            window.location.href = finalLink;
+            // openNDS authmon polls the server every few seconds.
+            // If we redirect immediately, the router hasn't synced yet and returns 403 Forbidden.
+            // We must wait for the backend to confirm the router has consumed the token.
+            let attempts = 0;
+            const maxAttempts = 15; // 30 seconds max wait
+
+            const checkStatus = async () => {
+                attempts++;
+                try {
+                    const res = await fetch(`/api/login?token=${token}`);
+                    const data = await res.json();
+                    
+                    if (!data.isPending) {
+                        // The router's authmon daemon has successfully polled and consumed the token!
+                        window.location.href = finalLink;
+                    } else if (attempts >= maxAttempts) {
+                        // Timeout reached, attempt to redirect anyway as a fallback
+                        console.warn("Timeout waiting for openNDS authmon, redirecting anyway.");
+                        window.location.href = finalLink;
+                    } else {
+                        // Still waiting
+                        setTimeout(checkStatus, 2000);
+                    }
+                } catch (error) {
+                    console.error("Error polling backend phase:", error);
+                    window.location.href = finalLink; // Redirect fallback
+                }
+            };
+
+            // Start polling
+            setTimeout(checkStatus, 2000);
+
         } catch (error) {
             console.error("Error registering token:", error);
             window.location.href = finalLink; // Redirect fallback
