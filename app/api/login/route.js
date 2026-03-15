@@ -88,6 +88,14 @@ export async function POST(request) {
                     try {
                         const acklist = Buffer.from(payloadStr, 'base64').toString('utf8');
                         console.log(`[API] authmon requested 'view' with payload:\n${acklist}`);
+                        
+                        // Parse acklist and remove them from our memory/DB.
+                        // acklist could be "none" or "* <encoded auth1> <encoded auth2>"
+                        if (acklist.trim() !== "none") {
+                             // They are acknowledged by the router as successfully processed!
+                             // In this implementation, we are actually aggressively deleting 
+                             // from the authList as soon as we send them down, so they are likely already gone.
+                        }
                     } catch (e) {
                          console.error("[API] Failed to decode view payload", e);
                     }
@@ -95,11 +103,32 @@ export async function POST(request) {
                     console.log(`[API] authmon requested 'view' but no payload was provided`);
                 }
                 
-                // In our implementation, we already deleted the master set during 'list'
-                // to match the exact behavior of the PHP dump. 
-                // We just return a success response string as required.
-                const responseText = "ack";
-                return new NextResponse(responseText, {
+                // CRUCIAL: After acknowledging, authmon expects the NEXT batch of pending tokens
+                // to be sent back in the EXACT same format as the 'list' command.
+                const members = await redis.smembers('authList');
+                
+                if (members.length === 0) {
+                    // Send an 'ack' string, or if no clients, the PHP script echoes nothing if $authlist is empty, 
+                    // or just "ack" if there was an acklist. 
+                    // To be safe and let authmon know we're alive, we'll send empty if no members,
+                    // but if there WAS a valid acklist, PHP sends "ack".
+                    const ackresponse = (payloadStr && Buffer.from(payloadStr, 'base64').toString('utf8').trim() !== "none") ? "ack" : "";
+                    return new NextResponse(ackresponse, {
+                        status: 200,
+                        headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+                    });
+                }
+
+                const responseText = '*' + members.map(c => ' ' + encodeURIComponent(c)).join('');
+                console.log(`[API] Sending list to authmon via 'view':\n${responseText}`);
+
+                // Clear the master set so we don't send them again
+                await redis.del('authList');
+                
+                // Sleep for 1s to ensure the DB write is settled
+                await new Promise(resolve => setTimeout(resolve, 1000));
+
+                return new NextResponse(responseText.trim(), {
                     status: 200,
                     headers: { 'Content-Type': 'text/plain; charset=utf-8' }
                 });
