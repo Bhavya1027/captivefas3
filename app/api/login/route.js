@@ -16,6 +16,7 @@ export async function POST(request) {
                 // openNDS expects the authlist to be space separated values:
                 // "rhid sessionlength uploadrate downloadrate uploadquota downloadquota custom"
                 // 0 means no limit.
+                // Note: token here is already the `rhid` generated on the frontend
                 const authString = `${body.token} 0 0 0 0 0`;
                 global.authList.set(body.token, authString);
                 console.log(`[FAS] Registered token ${body.token} in authList`);
@@ -47,19 +48,20 @@ export async function POST(request) {
             return new Response('ack', { status: 200 });
         }
 
+        // Housekeeping: authmon started up, clear stale entries
         if (authGet === 'clear') {
-            // Housekeeping: authmon started up, clear stale entries
             global.authList.clear();
             return new Response('ack', { status: 200 });
         }
 
-        // Default empty authlist
+        // Default empty authlist is just "*"
         let authlistResponse = '*';
 
         if (authGet === 'list') {
             // Send auth list and clear
             if (global.authList.size > 0) {
                 const clients = Array.from(global.authList.values());
+                // PHP does: $authlist=$authlist." ".rawurlencode(trim($clientauth[0]));
                 authlistResponse = '*' + clients.map(c => ' ' + encodeURIComponent(c)).join('');
                 global.authList.clear();
             }
@@ -82,9 +84,6 @@ export async function POST(request) {
                      client = client.replace(/^\*\s*/, '').trim();
                      if (client) {
                          // Find and remove the client record.
-                         // Normally we'd track by rhid. Let's just blindly delete
-                         // if the record contains this rhid since our records look like:
-                         // "rhid sessionlength uploadrate downloadrate uploadquota downloadquota custom"
                          for (const [key, value] of global.authList.entries()) {
                              if (value.startsWith(client)) {
                                  global.authList.delete(key);
@@ -97,6 +96,7 @@ export async function POST(request) {
                  // Nothing acknowledged, just send the current waiting list
                  if (global.authList.size > 0) {
                      const clients = Array.from(global.authList.values());
+                     // Critical: Space FIRST, then the encodeURIComponent of the entire group.
                      authlistResponse = '*' + clients.map(c => ' ' + encodeURIComponent(c)).join('');
                  }
                  return new Response(authlistResponse.trim(), { status: 200 });
