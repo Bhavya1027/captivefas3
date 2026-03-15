@@ -27,8 +27,8 @@ export async function POST(request) {
                 const emptyCustom = Buffer.from('guest=true').toString('base64');
                 const authString = `${client} 0 0 0 0 0 ${emptyCustom}`;
                 
-                // Add to Redis Set
-                await redis.sadd('authList', authString);
+                // Add to Redis Hash: mapping rhid -> authString
+                await redis.hset('authHash', { [client]: authString });
                 console.log(`[API] Registered token in Redis: ${authString}`);
                 
                 return NextResponse.json({ success: true, message: 'Token registered' });
@@ -50,10 +50,10 @@ export async function POST(request) {
             if (auth_get === 'list') {
                 console.log("[API] authmon requested 'list'");
                 
-                // Get all members of the Set
-                const members = await redis.smembers('authList');
+                // Get all pending auth strings from the Hash
+                const allValues = await redis.hvals('authHash');
                 
-                if (members.length === 0) {
+                if (allValues.length === 0) {
                     return new NextResponse('', {
                         status: 200,
                         headers: { 'Content-Type': 'text/plain; charset=utf-8' }
@@ -62,20 +62,12 @@ export async function POST(request) {
 
                 // PHP does: $authlist=$authlist." ".rawurlencode(trim($clientauth[0]));
                 // authmon strictly expects just the encoded strings separated by spaces.
-                const responseText = members.map(c => encodeURIComponent(c)).join(' ');
+                const responseText = allValues.map(c => encodeURIComponent(c)).join(' ');
                 console.log(`[API] Sending list to authmon:\n${responseText}`);
 
-                // Emulate the PHP script: wait 1 second, then return the text.
-                // In a real system, the router fetches 'list', then it fetches 'view' to acknowledge.
-                // The PHP script deletes the file right away. We'll clear the set to prevent replays.
-                // We'll trust authmon will consume this list immediately.
+                // We DO NOT aggressively delete the tokens here.
+                // We must wait for authmon to acknowledge them in the 'view' request!
                 
-                // Keep the members in memory temporarily, clear the master set
-                await redis.del('authList');
-                
-                // Sleep for 1s to ensure the file write (or in our case DB write) is settled
-                await new Promise(resolve => setTimeout(resolve, 1000));
-
                 return new NextResponse(responseText.trim(), {
                     status: 200,
                     headers: { 'Content-Type': 'text/plain; charset=utf-8' }
@@ -85,17 +77,29 @@ export async function POST(request) {
             // 2. authmon acknowledges it has read a specific token
             if (auth_get === 'view') {
                 const payloadStr = formData.get('payload');
+                let hasValidAcklist = false;
+
                 if (payloadStr) {
                     try {
                         const acklist = Buffer.from(payloadStr, 'base64').toString('utf8');
-                        console.log(`[API] authmon requested 'view' with payload:\n${acklist}`);
+                        console.log(`[API] authmon requested 'view' with payload: ${acklist.replace(/\n/g, '\\n')}`);
                         
                         // Parse acklist and remove them from our memory/DB.
-                        // acklist could be "none" or "* <encoded auth1> <encoded auth2>"
+                        // acklist could be "none" or "* <rhid>\n* <rhid>"
                         if (acklist.trim() !== "none") {
+                             hasValidAcklist = true;
                              // They are acknowledged by the router as successfully processed!
-                             // In this implementation, we are actually aggressively deleting 
-                             // from the authList as soon as we send them down, so they are likely already gone.
+                             const acks = acklist.split('\n');
+                             for (const ack of acks) {
+                                  // ltrim($client, "* ") logic from PHP
+                                  let client = ack.replace(/^\*?\s*/, '').trim(); 
+                                  if (client) {
+                                      console.log(`[API] OpenNDS Successfully Authenticated: ${client}`);
+                                      // Only remove from Redis when OpenNDS confirms success!
+                                      // This allows the frontend to wait until TRUE internet access is granted.
+                                      await redis.hdel('authHash', client);
+                                  }
+                             }
                         }
                     } catch (e) {
                          console.error("[API] Failed to decode view payload", e);
@@ -104,32 +108,32 @@ export async function POST(request) {
                     console.log(`[API] authmon requested 'view' but no payload was provided`);
                 }
                 
-                // CRUCIAL: After acknowledging, authmon expects the NEXT batch of pending tokens
+                // If authmon sent an explicit acklist with successful tokens, 
+                // it expects a simple "ack" response, NOT the next batch!
+                // It will ask for the next batch in a subsequent 'view' request with payload: 'none'.
+                if (hasValidAcklist) {
+                    return new NextResponse("ack", {
+                        status: 200,
+                        headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+                    });
+                }
+
+                // Otherwise, authmon expects the NEXT batch of pending tokens
                 // to be sent back in the EXACT same format as the 'list' command.
-                const members = await redis.smembers('authList');
+                const allValues = await redis.hvals('authHash');
                 
-                if (members.length === 0) {
+                if (allValues.length === 0) {
                     // Send an 'ack' string, or if no clients, the PHP script echoes nothing if $authlist is empty, 
                     // or just "ack" if there was an acklist. 
-                    // To be safe and let authmon know we're alive, we'll send empty if no members,
-                    // but if there WAS a valid acklist, PHP sends "ack".
-                    const ackresponse = (payloadStr && Buffer.from(payloadStr, 'base64').toString('utf8').trim() !== "none") ? "ack" : "";
-                    return new NextResponse(ackresponse, {
+                    return new NextResponse("", {
                         status: 200,
                         headers: { 'Content-Type': 'text/plain; charset=utf-8' }
                     });
                 }
 
                 // PHP just echoes the url-encoded strings separated by spaces explicitly, without an asterisk.
-                // authmon sends us an asterisk for acks, but expects just the tokens back for requests!
-                const responseText = members.map(c => encodeURIComponent(c)).join(' ');
+                const responseText = allValues.map(c => encodeURIComponent(c)).join(' ');
                 console.log(`[API] Sending list to authmon via 'view':\n${responseText}`);
-
-                // Clear the master set so we don't send them again
-                await redis.del('authList');
-                
-                // Sleep for 1s to ensure the DB write is settled
-                await new Promise(resolve => setTimeout(resolve, 1000));
 
                 return new NextResponse(responseText.trim(), {
                     status: 200,
@@ -172,13 +176,11 @@ export async function GET(request) {
         return NextResponse.json({ error: 'Token is required' }, { status: 400 });
     }
 
-    // Check if the token string exists in the Redis set
-    const emptyCustom = Buffer.from('guest=true').toString('base64');
-    const authString = `${token} 0 0 0 0 0 ${emptyCustom}`;
-    const isMember = await redis.sismember('authList', authString);
+    // Check if the rhid token exists as a field in the hash
+    const isMember = await redis.hexists('authHash', token);
 
-    // If it's still in the set, it's pending. If it's gone (1 means true/exists, 0 means false/gone),
-    // it means it was picked up by the 'list' poll and deleted!
+    // If it's still in the hash, it's pending. If it's gone (1 means true, 0 means false),
+    // it means it was successfully picked up and acknowledged by openNDS firewall daemon!
     const isPending = isMember === 1;
 
     console.log(`[API] Polling status for ${token}: isPending=${isPending}`);
