@@ -31,7 +31,7 @@ export default async function LoginPage({ searchParams }) {
         <div style={{ textAlign: 'center', marginTop: '100px', fontFamily: 'sans-serif' }}>
             <h1>{ATITHE_CONFIG.hotelName}</h1>
             <p>Click below to authorize your device.</p>
-            <ConnectButton token={rhid} gateway={gatewayUrl} originurl={data.originurl} />
+            <ConnectButton token={rhid} gateway={gatewayUrl} originurl={data.originurl ? decodeURIComponent(data.originurl) : undefined} />
         </div>
     );
 }
