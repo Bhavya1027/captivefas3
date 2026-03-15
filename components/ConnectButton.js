@@ -27,7 +27,7 @@ export default function ConnectButton({ token, gateway }) {
                 try {
                     const res = await fetch(`/api/login?token=${token}`);
                     const data = await res.json();
-                    
+
                     if (!data.isPending) {
                         // The router's authmon daemon has successfully polled and consumed the token!
                         window.location.href = finalLink;
@@ -58,15 +58,15 @@ export default function ConnectButton({ token, gateway }) {
         <a
             href={finalLink}
             onClick={handleConnect}
-            style={{ 
+            style={{
                 display: 'inline-block',
-                padding: '15px 30px', 
-                background: loading ? '#ccc' : '#0070f3', 
-                color: '#fff', 
-                borderRadius: '5px', 
+                padding: '15px 30px',
+                background: loading ? '#ccc' : '#0070f3',
+                color: '#fff',
+                borderRadius: '5px',
                 textDecoration: 'none',
                 fontWeight: 'bold',
-                cursor: loading ? 'wait' : 'pointer' 
+                cursor: loading ? 'wait' : 'pointer'
             }}
         >
             {loading ? "Authorizing..." : "Confirm & Connect"}
