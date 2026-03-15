@@ -83,12 +83,22 @@ export async function POST(request) {
 
             // 2. authmon acknowledges it has read a specific token
             if (auth_get === 'view') {
-                const client = formData.get('client');
-                console.log(`[API] authmon requested 'view' for client: ${client}`);
+                const payloadStr = formData.get('payload');
+                if (payloadStr) {
+                    try {
+                        const acklist = Buffer.from(payloadStr, 'base64').toString('utf8');
+                        console.log(`[API] authmon requested 'view' with payload:\n${acklist}`);
+                    } catch (e) {
+                         console.error("[API] Failed to decode view payload", e);
+                    }
+                } else {
+                    console.log(`[API] authmon requested 'view' but no payload was provided`);
+                }
+                
                 // In our implementation, we already deleted the master set during 'list'
                 // to match the exact behavior of the PHP dump. 
                 // We just return a success response string as required.
-                const responseText = "##########";
+                const responseText = "ack";
                 return new NextResponse(responseText, {
                     status: 200,
                     headers: { 'Content-Type': 'text/plain; charset=utf-8' }
