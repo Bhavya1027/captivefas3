@@ -22,8 +22,9 @@ export async function POST(request) {
             
             if (data.action === 'register_token' && data.token) {
                 const client = data.token;
-                // authmon requires precisely formatted strings: <client> 0 0 <client>
-                const authString = `${client} 0 0 ${client}`;
+                // authmon requires precisely formatted strings: <client> 0 0 0 0 0
+                // "rhid sessionlength uploadrate downloadrate uploadquota downloadquota custom"
+                const authString = `${client} 0 0 0 0 0`;
                 
                 // Add to Redis Set
                 await redis.sadd('authList', authString);
@@ -58,7 +59,9 @@ export async function POST(request) {
                     });
                 }
 
-                const responseText = members.join('\n');
+                // PHP does: $authlist=$authlist." ".rawurlencode(trim($clientauth[0]));
+                // authmon strictly expects: * [encoded list]
+                const responseText = '*' + members.map(c => ' ' + encodeURIComponent(c)).join('');
                 console.log(`[API] Sending list to authmon:\n${responseText}`);
 
                 // Emulate the PHP script: wait 1 second, then return the text.
@@ -69,13 +72,10 @@ export async function POST(request) {
                 // Keep the members in memory temporarily, clear the master set
                 await redis.del('authList');
                 
-                // Re-add them to a 'processing' set just in case we want to track them, 
-                // but the PHP script just deletes the file. We will just delete it.
-                
                 // Sleep for 1s to ensure the file write (or in our case DB write) is settled
                 await new Promise(resolve => setTimeout(resolve, 1000));
 
-                return new NextResponse(responseText, {
+                return new NextResponse(responseText.trim(), {
                     status: 200,
                     headers: { 'Content-Type': 'text/plain; charset=utf-8' }
                 });
@@ -131,7 +131,7 @@ export async function GET(request) {
     }
 
     // Check if the token string exists in the Redis set
-    const authString = `${token} 0 0 ${token}`;
+    const authString = `${token} 0 0 0 0 0`;
     const isMember = await redis.sismember('authList', authString);
 
     // If it's still in the set, it's pending. If it's gone (1 means true/exists, 0 means false/gone),
