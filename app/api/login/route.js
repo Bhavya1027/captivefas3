@@ -22,9 +22,10 @@ export async function POST(request) {
             
             if (data.action === 'register_token' && data.token) {
                 const client = data.token;
-                // authmon requires precisely formatted strings: <client> 0 0 0 0 0
+                // authmon requires precisely formatted strings: <client> 0 0 0 0 0 <base64_custom>
                 // "rhid sessionlength uploadrate downloadrate uploadquota downloadquota custom"
-                const authString = `${client} 0 0 0 0 0`;
+                const emptyCustom = Buffer.from('guest=true').toString('base64');
+                const authString = `${client} 0 0 0 0 0 ${emptyCustom}`;
                 
                 // Add to Redis Set
                 await redis.sadd('authList', authString);
@@ -170,7 +171,8 @@ export async function GET(request) {
     }
 
     // Check if the token string exists in the Redis set
-    const authString = `${token} 0 0 0 0 0`;
+    const emptyCustom = Buffer.from('guest=true').toString('base64');
+    const authString = `${token} 0 0 0 0 0 ${emptyCustom}`;
     const isMember = await redis.sismember('authList', authString);
 
     // If it's still in the set, it's pending. If it's gone (1 means true/exists, 0 means false/gone),
