@@ -1,129 +1,144 @@
 import { ATITHE_CONFIG } from '@/lib/config';
+import { NextResponse } from 'next/server';
+import { Redis } from '@upstash/redis';
 
-// In-memory store for pending authenticated users
-// Note: In a production environment with multiple serverless instances,
-// this should be stored in a database (like Redis or PostgreSQL).
-// Since this is currently running on Vercel, memory might not be shared
-// across invocations, but openNDS aggressively polls so it might catch it.
-global.authList = global.authList || new Map();
-
-export async function GET(request) {
-    const { searchParams } = new URL(request.url);
-    const token = searchParams.get('token');
-    
-    if (!token) {
-        return new Response('Missing token', { status: 400 });
-    }
-    
-    // Check if the token is still pending in our server memory
-    const isPending = global.authList.has(token);
-    
-    return new Response(JSON.stringify({ isPending }), { 
-        status: 200, 
-        headers: { 'Content-Type': 'application/json' }
-    });
-}
+// Only instantiate Redis if the env vars are present, to avoid build errors
+const redis = process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
+    ? Redis.fromEnv()
+    : null;
 
 export async function POST(request) {
     try {
-        // Handle JSON requests from our frontend (ConnectButton)
-        if (request.headers.get('content-type')?.includes('application/json')) {
-            const body = await request.json();
-            if (body.action === 'register_token' && body.token) {
-                // openNDS expects the authlist to be space separated values:
-                // "rhid sessionlength uploadrate downloadrate uploadquota downloadquota custom"
-                // 0 means no limit.
-                // Note: token here is already the `rhid` generated on the frontend
-                const authString = `${body.token} 0 0 0 0 0`;
-                global.authList.set(body.token, authString);
-                console.log(`[FAS] Registered token ${body.token} in authList`);
-                return new Response(JSON.stringify({ success: true }), { 
-                    status: 200, 
-                    headers: { 'Content-Type': 'application/json' }
+        const contentType = request.headers.get('content-type') || '';
+
+        // Handle Next.js frontend registering the token
+        if (contentType.includes('application/json')) {
+            if (!redis) {
+                console.error("Redis is not configured in environment variables!");
+                return NextResponse.json({ error: 'Redis is not configured' }, { status: 500 });
+            }
+
+            const data = await request.json();
+            
+            if (data.action === 'register_token' && data.token) {
+                const client = data.token;
+                // authmon requires precisely formatted strings: <client> 0 0 <client>
+                const authString = `${client} 0 0 ${client}`;
+                
+                // Add to Redis Set
+                await redis.sadd('authList', authString);
+                console.log(`[API] Registered token in Redis: ${authString}`);
+                
+                return NextResponse.json({ success: true, message: 'Token registered' });
+            }
+            
+            return NextResponse.json({ error: 'Invalid JSON request' }, { status: 400 });
+        }
+
+        // Handle openNDS authmon polling (x-www-form-urlencoded)
+        if (contentType.includes('application/x-www-form-urlencoded')) {
+            if (!redis) {
+                 return new NextResponse('', { status: 500 });
+            }
+
+            const formData = await request.formData();
+            const auth_get = formData.get('auth_get');
+
+            // 1. authmon asks for the list of pending authentications
+            if (auth_get === 'list') {
+                console.log("[API] authmon requested 'list'");
+                
+                // Get all members of the Set
+                const members = await redis.smembers('authList');
+                
+                if (members.length === 0) {
+                    return new NextResponse('', {
+                        status: 200,
+                        headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+                    });
+                }
+
+                const responseText = members.join('\n');
+                console.log(`[API] Sending list to authmon:\n${responseText}`);
+
+                // Emulate the PHP script: wait 1 second, then return the text.
+                // In a real system, the router fetches 'list', then it fetches 'view' to acknowledge.
+                // The PHP script deletes the file right away. We'll clear the set to prevent replays.
+                // We'll trust authmon will consume this list immediately.
+                
+                // Keep the members in memory temporarily, clear the master set
+                await redis.del('authList');
+                
+                // Re-add them to a 'processing' set just in case we want to track them, 
+                // but the PHP script just deletes the file. We will just delete it.
+                
+                // Sleep for 1s to ensure the file write (or in our case DB write) is settled
+                await new Promise(resolve => setTimeout(resolve, 1000));
+
+                return new NextResponse(responseText, {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/plain; charset=utf-8' }
                 });
             }
-            return new Response('Invalid JSON request', { status: 400 });
-        }
 
-        // Handle openNDS authmon formData polling
-        const formData = await request.formData();
-        const authGet = formData.get('auth_get');
-        const gatewayHash = formData.get('gatewayhash');
-        const payloadBase64 = formData.get('payload');
-
-        if (!authGet || !gatewayHash) {
-            return new Response('Invalid request', { status: 400 });
-        }
-
-        console.log(`[openNDS authmon] GET: ${authGet}, Hash: ${gatewayHash}`);
-
-        if (authGet === 'deauthed') {
-            return new Response('ack', { status: 200 });
-        }
-
-        if (authGet === 'custom') {
-            return new Response('ack', { status: 200 });
-        }
-
-        // Housekeeping: authmon started up, clear stale entries
-        if (authGet === 'clear') {
-            global.authList.clear();
-            return new Response('ack', { status: 200 });
-        }
-
-        // Default empty authlist is just "*"
-        let authlistResponse = '*';
-
-        if (authGet === 'list') {
-            // Send auth list and clear
-            if (global.authList.size > 0) {
-                const clients = Array.from(global.authList.values());
-                // PHP does: $authlist=$authlist." ".rawurlencode(trim($clientauth[0]));
-                authlistResponse = '*' + clients.map(c => ' ' + encodeURIComponent(c)).join('');
-                global.authList.clear();
-            }
-            return new Response(authlistResponse.trim(), { status: 200 });
-        }
-
-        if (authGet === 'view') {
-            let acklist = 'none';
-            if (payloadBase64) {
-                acklist = Buffer.from(payloadBase64, 'base64').toString('utf8');
+            // 2. authmon acknowledges it has read a specific token
+            if (auth_get === 'view') {
+                const client = formData.get('client');
+                console.log(`[API] authmon requested 'view' for client: ${client}`);
+                // In our implementation, we already deleted the master set during 'list'
+                // to match the exact behavior of the PHP dump. 
+                // We just return a success response string as required.
+                const responseText = "##########";
+                return new NextResponse(responseText, {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+                });
             }
 
-            console.log(`[openNDS authmon] acklist:`, acklist);
-
-            if (acklist !== 'none') {
-                 // Authmon sent a list of clients it successfully authenticated.
-                 // We can remove them from our pending authList.
-                 const ackClients = acklist.split('\n');
-                 for (let client of ackClients) {
-                     client = client.replace(/^\*\s*/, '').trim();
-                     if (client) {
-                         // Find and remove the client record.
-                         for (const [key, value] of global.authList.entries()) {
-                             if (value.startsWith(client)) {
-                                 global.authList.delete(key);
-                             }
-                         }
-                     }
-                 }
-                 return new Response('ack', { status: 200 });
-            } else {
-                 // Nothing acknowledged, just send the current waiting list
-                 if (global.authList.size > 0) {
-                     const clients = Array.from(global.authList.values());
-                     // Critical: Space FIRST, then the encodeURIComponent of the entire group.
-                     authlistResponse = '*' + clients.map(c => ' ' + encodeURIComponent(c)).join('');
-                 }
-                 return new Response(authlistResponse.trim(), { status: 200 });
+            // 3. authmon sends status updates (status_log)
+            if (auth_get === 'status_log') {
+                const log = formData.get('log');
+                if (log) {
+                    console.log("[API] authmon status_log:", log);
+                }
+                return new NextResponse("##########", {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+                });
             }
+
+            return new NextResponse('', { status: 200 }); // Ignore other form data
         }
 
-        return new Response('ok', { status: 200 });
+        return NextResponse.json({ error: 'Unsupported Content-Type' }, { status: 415 });
 
     } catch (error) {
-        console.error("[openNDS authmon] Error handling POST request:", error);
-        return new Response('Internal Server Error', { status: 500 });
+        console.error("[API] Error processing request:", error);
+        return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
     }
+}
+
+export async function GET(request) {
+    if (!redis) {
+        return NextResponse.json({ error: 'Redis is not configured' }, { status: 500 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const token = searchParams.get('token');
+
+    if (!token) {
+        return NextResponse.json({ error: 'Token is required' }, { status: 400 });
+    }
+
+    // Check if the token string exists in the Redis set
+    const authString = `${token} 0 0 ${token}`;
+    const isMember = await redis.sismember('authList', authString);
+
+    // If it's still in the set, it's pending. If it's gone (1 means true/exists, 0 means false/gone),
+    // it means it was picked up by the 'list' poll and deleted!
+    const isPending = isMember === 1;
+
+    console.log(`[API] Polling status for ${token}: isPending=${isPending}`);
+
+    return NextResponse.json({ isPending });
 }
