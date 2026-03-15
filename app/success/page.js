@@ -1,7 +1,15 @@
 // app/success/page.js
 "use client";
+import { useSearchParams } from 'next/navigation';
+import { Suspense } from 'react';
 
-export default function SuccessPage() {
+function SuccessContent() {
+    const searchParams = useSearchParams();
+    // originurl passed by ConnectButton — this is the HTTP URL the client originally tried to visit.
+    // Navigating back to it completes the captive portal cycle on the OS (iOS CNA, Android CNA, etc.)
+    // and signals to the OS that the portal is dismissed, allowing the real browser to take over.
+    const continueUrl = searchParams.get('continue') || 'http://captive.apple.com/hotspot-detect.html';
+
     return (
         <main style={{
             flex: 1,
@@ -34,7 +42,7 @@ export default function SuccessPage() {
             </p>
 
             <button
-                onClick={() => window.location.href = 'https://www.google.com'}
+                onClick={() => window.location.href = continueUrl}
                 style={{
                     marginTop: '30px',
                     padding: '12px 24px',
@@ -53,5 +61,13 @@ export default function SuccessPage() {
                 Powered by ATITHE
             </footer>
         </main>
+    );
+}
+
+export default function SuccessPage() {
+    return (
+        <Suspense>
+            <SuccessContent />
+        </Suspense>
     );
 }
