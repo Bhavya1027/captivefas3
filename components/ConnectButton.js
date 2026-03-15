@@ -1,9 +1,13 @@
 "use client";
 import { useState } from 'react';
 
-export default function ConnectButton({ token, gateway }) {
+export default function ConnectButton({ token, gateway, originurl }) {
     const [loading, setLoading] = useState(false);
-    const finalLink = `${gateway}opennds_auth/?tok=${token}`;
+    
+    // FAS Secure Level 3: DO NOT redirect back to the gateway!
+    // OpenWRT's uhttpd server blocks port 80/443 loops and returns 403 Access Denied.
+    // Instead, redirect to a success page or the originally requested URL.
+    const finalLink = originurl ? `/success?continue=${encodeURIComponent(originurl)}` : `/success`;
 
     const handleConnect = async (e) => {
         e.preventDefault();
@@ -17,7 +21,7 @@ export default function ConnectButton({ token, gateway }) {
             });
 
             // openNDS authmon polls the server every few seconds.
-            // If we redirect immediately, the router hasn't synced yet and returns 403 Forbidden.
+            // If we redirect immediately, the router hasn't synced yet.
             // We must wait for the backend to confirm the router has consumed the token.
             let attempts = 0;
             const maxAttempts = 15; // 30 seconds max wait
