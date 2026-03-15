@@ -61,8 +61,8 @@ export async function POST(request) {
                 }
 
                 // PHP does: $authlist=$authlist." ".rawurlencode(trim($clientauth[0]));
-                // authmon strictly expects: * [encoded list]
-                const responseText = '*' + members.map(c => ' ' + encodeURIComponent(c)).join('');
+                // authmon strictly expects just the encoded strings separated by spaces.
+                const responseText = members.map(c => encodeURIComponent(c)).join(' ');
                 console.log(`[API] Sending list to authmon:\n${responseText}`);
 
                 // Emulate the PHP script: wait 1 second, then return the text.
@@ -120,7 +120,9 @@ export async function POST(request) {
                     });
                 }
 
-                const responseText = '*' + members.map(c => ' ' + encodeURIComponent(c)).join('');
+                // PHP just echoes the url-encoded strings separated by spaces explicitly, without an asterisk.
+                // authmon sends us an asterisk for acks, but expects just the tokens back for requests!
+                const responseText = members.map(c => encodeURIComponent(c)).join(' ');
                 console.log(`[API] Sending list to authmon via 'view':\n${responseText}`);
 
                 // Clear the master set so we don't send them again

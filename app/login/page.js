@@ -16,7 +16,7 @@ export default async function LoginPage({ searchParams }) {
 
     // In FAS Secure Level 2/3, the token needed for authentication is the SHA256 hash of (hid + faskey)
     const crypto = require('crypto');
-    const rhid = crypto.createHash('sha256').update(data.hid + ATITHE_CONFIG.faskey).digest('hex');
+    const rhid = crypto.createHash('sha256').update(data.hid.trim() + ATITHE_CONFIG.faskey.trim()).digest('hex');
 
     // Make sure gateway is a full HTTP URL with trailing slash
     let gatewayUrl = data.gatewayaddress;
