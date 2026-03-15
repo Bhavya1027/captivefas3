@@ -1,14 +1,25 @@
 // app/success/page.js
 "use client";
-import { useSearchParams } from 'next/navigation';
-import { Suspense } from 'react';
+import { useEffect } from 'react';
 
-function SuccessContent() {
-    const searchParams = useSearchParams();
-    // originurl passed by ConnectButton — this is the HTTP URL the client originally tried to visit.
-    // Navigating back to it completes the captive portal cycle on the OS (iOS CNA, Android CNA, etc.)
-    // and signals to the OS that the portal is dismissed, allowing the real browser to take over.
-    const continueUrl = searchParams.get('continue') || 'http://captive.apple.com/hotspot-detect.html';
+// After authentication, navigating to the OS-standard CPD probe URL signals to the OS
+// that the captive portal is gone. iOS CNA and Android's captive browser will auto-close
+// when this URL returns its expected success response (which it will once the firewall is open).
+// originurl is NOT used here because in this openNDS setup it points back to the portal redirect,
+// which would re-open the login page.
+const CPD_CLOSE_URL = 'http://captive.apple.com/hotspot-detect.html';
+
+export default function SuccessPage() {
+    useEffect(() => {
+        // Auto-trigger CPD detection 3 seconds after the success page loads.
+        // By this point the firewall is already open (ConnectButton waited for authmon ack),
+        // so the CPD URL will return a real success response, causing the OS to close the
+        // captive portal browser without any further user interaction.
+        const timer = setTimeout(() => {
+            window.location.href = CPD_CLOSE_URL;
+        }, 3000);
+        return () => clearTimeout(timer);
+    }, []);
 
     return (
         <main style={{
@@ -20,7 +31,6 @@ function SuccessContent() {
             padding: '20px',
             textAlign: 'center'
         }}>
-            {/* A simple success icon or checkmark can be added here later */}
             <div style={{
                 width: '80px',
                 height: '80px',
@@ -38,11 +48,11 @@ function SuccessContent() {
                 You're Online!
             </h1>
             <p style={{ color: '#6b7280', fontSize: '16px', lineHeight: '1.5', maxWidth: '300px' }}>
-                Your device is now authenticated. You can browse the internet freely.
+                Your device is now authenticated. This window will close automatically.
             </p>
 
             <button
-                onClick={() => window.location.href = continueUrl}
+                onClick={() => window.location.href = CPD_CLOSE_URL}
                 style={{
                     marginTop: '30px',
                     padding: '12px 24px',
@@ -61,13 +71,5 @@ function SuccessContent() {
                 Powered by ATITHE
             </footer>
         </main>
-    );
-}
-
-export default function SuccessPage() {
-    return (
-        <Suspense>
-            <SuccessContent />
-        </Suspense>
     );
 }
