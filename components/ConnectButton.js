@@ -1,14 +1,14 @@
 "use client";
 import { useState } from 'react';
 
-export default function ConnectButton({ token, gateway, originurl }) {
+export default function ConnectButton({ token, gateway, originurl, hotelId }) {
     const [status, setStatus] = useState('idle'); // idle | loading | error
 
     const handleConnect = async (e) => {
         e.preventDefault();
         setStatus('loading');
         try {
-            await fetch('/api/login', {
+            await fetch(`/api/login/${hotelId}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'register_token', token }),
@@ -20,7 +20,7 @@ export default function ConnectButton({ token, gateway, originurl }) {
             const checkStatus = async () => {
                 attempts++;
                 try {
-                    const res = await fetch(`/api/login?token=${token}`);
+                    const res = await fetch(`/api/login/${hotelId}?token=${token}`);
                     const data = await res.json();
 
                     if (!data.isPending) {

@@ -1,4 +1,3 @@
-import { ATITHE_CONFIG } from '@/lib/config';
 import { NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 
@@ -16,7 +15,10 @@ function buildAuthListResponse(authStrings) {
     return '* ' + authStrings.map(s => encodeURIComponent(s)).join(' ');
 }
 
-export async function POST(request) {
+export async function POST(request, { params }) {
+    const { hotelId } = await params;
+    const authHashKey = `authHash:${hotelId}`;
+
     try {
         const contentType = request.headers.get('content-type') || '';
 
@@ -35,8 +37,8 @@ export async function POST(request) {
                 const emptyCustom = Buffer.from('guest=true').toString('base64');
                 const authString = `${client} 0 0 0 0 0 ${emptyCustom}`;
 
-                await redis.hset('authHash', { [client]: authString });
-                console.log(`[API] Registered token in Redis: ${authString}`);
+                await redis.hset(authHashKey, { [client]: authString });
+                console.log(`[API:${hotelId}] Registered token in Redis: ${authString}`);
 
                 return NextResponse.json({ success: true, message: 'Token registered' });
             }
@@ -55,17 +57,17 @@ export async function POST(request) {
 
             // authmon sends "clear" on startup to wipe stale entries from the previous session.
             if (auth_get === 'clear') {
-                console.log("[API] authmon requested 'clear' — deleting stale auth entries");
-                await redis.del('authHash');
+                console.log(`[API:${hotelId}] authmon requested 'clear' — deleting stale auth entries`);
+                await redis.del(authHashKey);
                 return new NextResponse('', { status: 200 });
             }
 
             // authmon sends "list": FAS responds with all pending tokens and DELETES them immediately.
             // (PHP reference deletes files right after including them in the list.)
             if (auth_get === 'list') {
-                console.log("[API] authmon requested 'list'");
+                console.log(`[API:${hotelId}] authmon requested 'list'`);
 
-                const allEntries = await redis.hgetall('authHash');
+                const allEntries = await redis.hgetall(authHashKey);
 
                 if (!allEntries || Object.keys(allEntries).length === 0) {
                     return new NextResponse('*', {
@@ -78,10 +80,10 @@ export async function POST(request) {
                 const values = Object.values(allEntries);
 
                 // Delete all entries immediately, matching PHP list handler behavior.
-                await redis.hdel('authHash', ...keys);
+                await redis.hdel(authHashKey, ...keys);
 
                 const responseText = buildAuthListResponse(values);
-                console.log(`[API] Sending list to authmon (and deleting):\n${responseText}`);
+                console.log(`[API:${hotelId}] Sending list to authmon (and deleting):\n${responseText}`);
 
                 return new NextResponse(responseText, {
                     status: 200,
@@ -99,7 +101,7 @@ export async function POST(request) {
                 if (payloadStr) {
                     try {
                         const acklist = Buffer.from(payloadStr, 'base64').toString('utf8');
-                        console.log(`[API] authmon 'view' payload decoded: ${acklist.replace(/\n/g, '\\n')}`);
+                        console.log(`[API:${hotelId}] authmon 'view' payload decoded: ${acklist.replace(/\n/g, '\\n')}`);
 
                         if (acklist.trim() !== 'none') {
                             hasValidAcklist = true;
@@ -110,16 +112,16 @@ export async function POST(request) {
                                 // Strip the leading "* " prefix (same as PHP's ltrim($client, "* "))
                                 const client = ack.replace(/^\*?\s*/, '').trim();
                                 if (client) {
-                                    console.log(`[API] openNDS confirmed authentication for: ${client}`);
-                                    await redis.hdel('authHash', client);
+                                    console.log(`[API:${hotelId}] openNDS confirmed authentication for: ${client}`);
+                                    await redis.hdel(authHashKey, client);
                                 }
                             }
                         }
                     } catch (e) {
-                        console.error("[API] Failed to decode view payload", e);
+                        console.error(`[API:${hotelId}] Failed to decode view payload`, e);
                     }
                 } else {
-                    console.log('[API] authmon view — no payload provided');
+                    console.log(`[API:${hotelId}] authmon view — no payload provided`);
                 }
 
                 // When authmon sent an ack list, reply with "ack". authmon will then send
@@ -132,9 +134,9 @@ export async function POST(request) {
                 }
 
                 // authmon is asking for the next batch of pending tokens (payload was "none").
-                const allValues = await redis.hvals('authHash');
+                const allValues = await redis.hvals(authHashKey);
                 const responseText = buildAuthListResponse(allValues);
-                console.log(`[API] Sending pending list to authmon via 'view':\n${responseText}`);
+                console.log(`[API:${hotelId}] Sending pending list to authmon via 'view':\n${responseText}`);
 
                 return new NextResponse(responseText, {
                     status: 200,
@@ -145,7 +147,7 @@ export async function POST(request) {
             // authmon sends status updates
             if (auth_get === 'status_log') {
                 const log = formData.get('log');
-                if (log) console.log("[API] authmon status_log:", log);
+                if (log) console.log(`[API:${hotelId}] authmon status_log:`, log);
                 return new NextResponse('##########', {
                     status: 200,
                     headers: { 'Content-Type': 'text/plain; charset=utf-8' }
@@ -166,12 +168,15 @@ export async function POST(request) {
         return NextResponse.json({ error: 'Unsupported Content-Type' }, { status: 415 });
 
     } catch (error) {
-        console.error("[API] Error processing request:", error);
+        console.error(`[API:${hotelId}] Error processing request:`, error);
         return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
     }
 }
 
-export async function GET(request) {
+export async function GET(request, { params }) {
+    const { hotelId } = await params;
+    const authHashKey = `authHash:${hotelId}`;
+
     if (!redis) {
         return NextResponse.json({ error: 'Redis is not configured' }, { status: 500 });
     }
@@ -183,12 +188,12 @@ export async function GET(request) {
         return NextResponse.json({ error: 'Token is required' }, { status: 400 });
     }
 
-    const isMember = await redis.hexists('authHash', token);
+    const isMember = await redis.hexists(authHashKey, token);
     // isPending=true means token is still in Redis (waiting for authmon to process).
     // isPending=false means authmon called ndsctl auth and the firewall is open.
     const isPending = isMember === 1;
 
-    console.log(`[API] Polling for ${token}: isPending=${isPending}`);
+    console.log(`[API:${hotelId}] Polling for ${token}: isPending=${isPending}`);
 
     return NextResponse.json({ isPending });
 }
