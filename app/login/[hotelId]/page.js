@@ -37,6 +37,36 @@ export default async function LoginPage({ params, searchParams }) {
         <div style={{ textAlign: 'center', marginTop: '100px', fontFamily: 'sans-serif' }}>
             <h1>{hotel.hotelName}</h1>
             <p>Click below to authorize your device.</p>
+            <div style={{ marginBottom: '20px' }}>
+                <input
+                    type="text"
+                    placeholder="Phone Number / Room Number"
+                    style={{
+                        display: 'block',
+                        margin: '0 auto 12px',
+                        padding: '10px 14px',
+                        width: '260px',
+                        fontSize: '15px',
+                        borderRadius: '5px',
+                        border: '1px solid #d1d5db',
+                        outline: 'none',
+                    }}
+                />
+                <input
+                    type="text"
+                    placeholder="OTP / PIN"
+                    style={{
+                        display: 'block',
+                        margin: '0 auto',
+                        padding: '10px 14px',
+                        width: '260px',
+                        fontSize: '15px',
+                        borderRadius: '5px',
+                        border: '1px solid #d1d5db',
+                        outline: 'none',
+                    }}
+                />
+            </div>
             <ConnectButton token={rhid} gateway={gatewayUrl} originurl={data.originurl ? decodeURIComponent(data.originurl) : undefined} hotelId={hotelId} />
         </div>
     );
